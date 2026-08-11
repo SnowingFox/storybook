@@ -11,11 +11,13 @@ import {
   metaArgsRecord,
   metaObjectPath,
   normalizeStoryDeclaration,
+  resolveIdentifierInit,
   resolveRenderFunction,
+  returnedExpressionPath,
   returnedObjectExpression,
 } from 'storybook/internal/csf-tools';
 
-import { classifyArgs, type VueDocgenArgInfo } from './classify-args.ts';
+import { classifyArgs, type ClassifiedArg, type VueDocgenArgInfo } from './classify-args.ts';
 import {
   readTemplateRenderConfig,
   transformTemplate,
@@ -25,7 +27,7 @@ import {
 const DEFAULT_DOCGEN: VueDocgenArgInfo = { props: new Set(), events: new Set(), slots: new Set() };
 
 interface ParsedStory {
-  args: ReturnType<typeof classifyArgs>['args'];
+  args: ClassifiedArg[];
   imports: string[];
   template?: string;
 }
@@ -78,7 +80,7 @@ ${storySource}
   );
   const renderObject =
     renderResolution.kind === 'resolved'
-      ? returnedObjectExpression(renderResolution.path.node)
+      ? readReturnedRenderObject(renderResolution.path)
       : undefined;
   const config = renderObject
     ? readTemplateRenderConfig(renderObject, collectImportBindings(csf._file.path))
@@ -109,6 +111,23 @@ function objectPropertyPaths(path: NodePath<t.ObjectExpression>): NodePath<t.Obj
   return path
     .get('properties')
     .filter((property): property is NodePath<t.ObjectProperty> => property.isObjectProperty());
+}
+
+function readReturnedRenderObject(
+  renderFunction: NodePath<t.ArrowFunctionExpression | t.FunctionExpression | t.FunctionDeclaration>
+): t.ObjectExpression | undefined {
+  const inline = returnedObjectExpression(renderFunction.node);
+  if (inline) {
+    return inline;
+  }
+
+  const returned = returnedExpressionPath(renderFunction);
+  if (!returned?.isIdentifier()) {
+    return undefined;
+  }
+
+  const resolved = resolveIdentifierInit(renderFunction, returned);
+  return resolved?.isObjectExpression() ? resolved.node : undefined;
 }
 
 describe('transformTemplate', () => {
@@ -255,6 +274,29 @@ export const Primary = {
 
       <template>
         <MyButton active v-model="modelValue" :ref="ref2" />
+      </template>"
+    `);
+  });
+
+  it('reads a local const render config returned by identifier', () => {
+    expect(
+      renderStory(`
+const config = {
+  components: { MyButton },
+  setup: () => ({ args }),
+  template: '<MyButton v-bind="args" />',
+};
+
+export const Primary = {
+  args: {
+    label: 'From config',
+  },
+  render: () => config,
+};
+`)?.snippet
+    ).toMatchInlineSnapshot(`
+      "<template>
+        <MyButton active label="From config" />
       </template>"
     `);
   });

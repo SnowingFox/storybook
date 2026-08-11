@@ -10,13 +10,18 @@ import {
 } from 'ultrahtml';
 
 import { types as t } from 'storybook/internal/babel';
-import { keyOf, propertyValue, type ImportBinding } from 'storybook/internal/csf-tools';
+import {
+  keyOf,
+  propertyValue,
+  unwrapValue,
+  type ImportBinding,
+} from 'storybook/internal/csf-tools';
 
 import { importStatementForBinding, indent, isVueExpressionAttribute } from './ast-utils.ts';
-import type { ClassifiedArg } from './classify-args.ts';
-import { unwrapValue } from './classify-value.ts';
+import type { ClassifiedArg, ClassifiedSlotArg } from './classify-args.ts';
 import {
   createRenderContext,
+  type FunctionSlotRenderer,
   partitionArgsByRole,
   type RenderContext,
   renderEventArg,
@@ -24,7 +29,7 @@ import {
   renderPreparedSfcSnippet,
   renderPropLikeArg,
   renderPropValue,
-  renderSlotContent,
+  renderSlotArgContent,
   type RenderedProp,
 } from './render-sfc.ts';
 
@@ -42,6 +47,8 @@ export interface TransformTemplateInput {
   args: ClassifiedArg[];
   /** Component tag name to import statement from the render object's components map. */
   componentImports: Map<string, string>;
+  /** Optional renderer for function-valued slot args. */
+  renderFunctionSlot?: FunctionSlotRenderer;
 }
 
 export interface TransformTemplateResult {
@@ -127,7 +134,7 @@ export function transformTemplate(
       usedImports.add(componentImport);
     }
 
-    unsupported = !transformElementAttributes(node, argsByName, ctx);
+    unsupported = !transformElementAttributes(node, argsByName, ctx, input.renderFunctionSlot);
   });
 
   if (unsupported) {
@@ -272,7 +279,8 @@ function objectReturnedFromBlock(block: t.BlockStatement): t.ObjectExpression | 
 function transformElementAttributes(
   node: MutableElementNode,
   argsByName: Map<string, ClassifiedArg>,
-  ctx: RenderContext
+  ctx: RenderContext,
+  renderFunctionSlot?: FunctionSlotRenderer
 ): boolean {
   const attributes = node.attributes;
 
@@ -282,7 +290,7 @@ function transformElementAttributes(
     // <Button v-bind="args" />
     if (name === 'v-bind' && attributeValue === ARGS_NAME) {
       delete attributes[name];
-      if (!expandArgsBinding(node, [...argsByName.values()], ctx)) {
+      if (!expandArgsBinding(node, [...argsByName.values()], ctx, renderFunctionSlot)) {
         return false;
       }
       continue;
@@ -321,7 +329,8 @@ function transformElementAttributes(
 function expandArgsBinding(
   node: MutableElementNode,
   args: ClassifiedArg[],
-  ctx: RenderContext
+  ctx: RenderContext,
+  renderFunctionSlot?: FunctionSlotRenderer
 ): boolean {
   const partitioned = partitionArgsByRole(args);
   const props = partitioned.props.map((arg) => renderPropLikeArg(arg, ctx));
@@ -331,7 +340,15 @@ function expandArgsBinding(
     applyRenderedAttribute(node.attributes, prop);
   }
 
-  const slotNodes = partitioned.slots.flatMap((slot) => renderSlotNodes(slot, node, ctx));
+  const slotNodes: HtmlNode[] = [];
+  for (const slot of partitioned.slots) {
+    const nodes = renderSlotNodes(slot, node, ctx, renderFunctionSlot);
+    // A function slot without renderable content would misrepresent the story, so bail.
+    if (nodes === undefined) {
+      return false;
+    }
+    slotNodes.push(...nodes);
+  }
   if (slotNodes.length === 0) {
     return true;
   }
@@ -375,11 +392,15 @@ function replaceTextInterpolations(
 
 // header: 'Hello' -> <template #header>Hello</template>
 function renderSlotNodes(
-  arg: ClassifiedArg,
+  arg: ClassifiedSlotArg,
   parent: MutableElementNode,
-  ctx: RenderContext
-): HtmlNode[] {
-  const content = renderSlotContent(arg, ctx);
+  ctx: RenderContext,
+  renderFunctionSlot?: FunctionSlotRenderer
+): HtmlNode[] | undefined {
+  const content = renderSlotArgContent(arg, ctx, renderFunctionSlot);
+  if (content === undefined) {
+    return undefined;
+  }
 
   if (arg.name === 'default') {
     return parseFragment(content, parent);

@@ -24,5 +24,7 @@ export {
   metaObjectPath,
   propertyValue,
   resolveIdentifierInit,
+  returnedExpressionPath,
   returnedObjectExpression,
+  unwrapValue,
 } from './utils.ts';

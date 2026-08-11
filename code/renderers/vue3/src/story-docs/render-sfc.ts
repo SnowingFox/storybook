@@ -1,7 +1,12 @@
 import { types as t } from 'storybook/internal/babel';
 
 import { indent, isVueExpressionAttribute, slotSortKey, wrapSlotContent } from './ast-utils.ts';
-import type { ClassifiedArg, RenderableValuePlan } from './classify-args.ts';
+import type {
+  ClassifiedArg,
+  ClassifiedPropLikeArg,
+  ClassifiedSlotArg,
+  RenderableValuePlan,
+} from './classify-args.ts';
 import { printValue, unwrapValue } from './classify-value.ts';
 
 export interface RenderSfcInput {
@@ -9,6 +14,8 @@ export interface RenderSfcInput {
   componentName: string;
   /** Classified args to render into the SFC snippet. */
   args: ClassifiedArg[];
+  /** Optional renderer for function-valued slot args. */
+  renderFunctionSlot?: FunctionSlotRenderer;
 }
 
 export interface RenderSfcMarkupInput {
@@ -45,15 +52,30 @@ export interface RenderedProp {
   value?: string;
 }
 
+export type FunctionSlotRenderer = (
+  value: t.ArrowFunctionExpression | t.FunctionExpression,
+  ctx: RenderContext
+) => string | undefined;
+
 const VUE_PACKAGE = 'vue';
 
 /** Render classified CSF args into the same SFC block shape as Vue's runtime source decorator. */
-export function renderSfcSnippet(input: RenderSfcInput): string {
+export function renderSfcSnippet(input: RenderSfcInput): string | undefined {
   const ctx = createRenderContext(input.args);
   const partitioned = partitionArgsByRole(input.args);
   const props = partitioned.props.map((arg) => formatRenderedProp(renderPropLikeArg(arg, ctx)));
   const events = partitioned.events.map((arg) => formatRenderedProp(renderEventArg(arg, ctx)));
-  const slotSourceCode = partitioned.slots.map((arg) => renderSlotArg(arg, ctx)).join('\n');
+  const slotSource: string[] = [];
+  for (const arg of partitioned.slots) {
+    const rendered = renderSlotArg(arg, ctx, input.renderFunctionSlot);
+    // Only function-slot plans fail to render; without their content the snippet would misrepresent
+    // the story, so bail and leave it to runtime source.
+    if (rendered === undefined) {
+      return undefined;
+    }
+    slotSource.push(rendered);
+  }
+  const slotSourceCode = slotSource.join('\n');
   const openTag = [input.componentName, ...props, ...events].join(' ');
   const templateCode = slotSourceCode
     ? `<${openTag}>\n${indent(slotSourceCode)}\n</${input.componentName}>`
@@ -68,17 +90,19 @@ export function renderSfcSnippet(input: RenderSfcInput): string {
  * Sorted before rendering, so hoisted consts are declared in the order their attributes appear.
  */
 export function partitionArgsByRole(args: ClassifiedArg[]): {
-  props: ClassifiedArg[];
-  events: ClassifiedArg[];
-  slots: ClassifiedArg[];
+  props: ClassifiedPropLikeArg[];
+  events: ClassifiedPropLikeArg[];
+  slots: ClassifiedSlotArg[];
 } {
   return {
     props: args
-      .filter((arg) => arg.role === 'model' || arg.role === 'prop')
+      .filter((arg): arg is ClassifiedPropLikeArg => arg.role === 'model' || arg.role === 'prop')
       .sort((a, b) => a.name.localeCompare(b.name)),
-    events: args.filter((arg) => arg.role === 'event').sort((a, b) => a.name.localeCompare(b.name)),
+    events: args
+      .filter((arg): arg is ClassifiedPropLikeArg => arg.role === 'event')
+      .sort((a, b) => a.name.localeCompare(b.name)),
     slots: args
-      .filter((arg) => arg.role === 'slot')
+      .filter((arg): arg is ClassifiedSlotArg => arg.role === 'slot')
       .sort((a, b) => slotSortKey(a.name).localeCompare(slotSortKey(b.name))),
   };
 }
@@ -105,11 +129,11 @@ export function renderPreparedSfcSnippet(input: RenderSfcMarkupInput): string {
 }
 
 /** Render a classified prop or model arg into a Vue template attribute. */
-export function renderPropLikeArg(arg: ClassifiedArg, ctx: RenderContext): RenderedProp {
+export function renderPropLikeArg(arg: ClassifiedPropLikeArg, ctx: RenderContext): RenderedProp {
   return arg.role === 'model' ? renderModelArg(arg, ctx) : renderPropArg(arg, ctx);
 }
 
-function renderPropArg(arg: ClassifiedArg, ctx: RenderContext): RenderedProp {
+function renderPropArg(arg: ClassifiedPropLikeArg, ctx: RenderContext): RenderedProp {
   return renderPropValue(
     { attributeName: arg.name, variableName: arg.name, value: arg.value, plan: arg.plan },
     ctx
@@ -150,7 +174,7 @@ function hoistedProp(
   return { attrName: `:${input.attributeName}`, value: bindingName };
 }
 
-function renderModelArg(arg: ClassifiedArg, ctx: RenderContext): RenderedProp {
+function renderModelArg(arg: ClassifiedPropLikeArg, ctx: RenderContext): RenderedProp {
   const bindingName = allocateBindingName(arg.name, ctx);
   ctx.variables.set(bindingName, `ref(${printValue(unwrapValue(arg.value))})`);
 
@@ -159,14 +183,35 @@ function renderModelArg(arg: ClassifiedArg, ctx: RenderContext): RenderedProp {
 }
 
 /** Listeners hoist their handler, because inline handlers would bloat the tag. */
-export function renderEventArg(arg: ClassifiedArg, ctx: RenderContext): RenderedProp {
+export function renderEventArg(arg: ClassifiedPropLikeArg, ctx: RenderContext): RenderedProp {
   const bindingName = allocateBindingName(arg.name, ctx);
   ctx.variables.set(bindingName, printValue(unwrapValue(arg.value)));
   return { attrName: `@${arg.eventName ?? arg.name}`, value: bindingName };
 }
 
-function renderSlotArg(arg: ClassifiedArg, ctx: RenderContext): string {
-  return wrapSlotContent(arg.name, renderSlotContent(arg, ctx));
+function renderSlotArg(
+  arg: ClassifiedSlotArg,
+  ctx: RenderContext,
+  renderFunctionSlot?: FunctionSlotRenderer
+): string | undefined {
+  const content = renderSlotArgContent(arg, ctx, renderFunctionSlot);
+  return content === undefined ? undefined : wrapSlotContent(arg.name, content);
+}
+
+/** Slot children for one classified slot arg, or undefined when a function slot cannot render. */
+export function renderSlotArgContent(
+  arg: ClassifiedSlotArg,
+  ctx: RenderContext,
+  renderFunctionSlot?: FunctionSlotRenderer
+): string | undefined {
+  if (arg.plan.kind === 'function-slot') {
+    const value = unwrapValue(arg.value);
+    return renderFunctionSlot && isFunctionValue(value)
+      ? renderFunctionSlot(value, ctx)
+      : undefined;
+  }
+
+  return renderSlotContent(arg, arg.plan, ctx);
 }
 
 /** Inline primitive arg values that do not require script setup hoists. */
@@ -190,16 +235,24 @@ export function renderInlinePrimitiveValue(node: t.Node): string | undefined {
  * Text-shaped literals become text directly; everything else is interpolated, since a hoisted
  * `<script setup>` binding cannot reach slot content any other way.
  */
-export function renderSlotContent(arg: ClassifiedArg, ctx: RenderContext): string {
+function renderSlotContent(
+  arg: ClassifiedSlotArg,
+  plan: RenderableValuePlan,
+  ctx: RenderContext
+): string {
   const value = unwrapValue(arg.value);
 
-  if (arg.plan.kind === 'inline') {
+  if (plan.kind === 'inline') {
     return renderInlinePrimitiveValue(value) ?? `{{ ${printValue(value)} }}`;
   }
 
   const bindingName = allocateBindingName(arg.name, ctx);
   ctx.variables.set(bindingName, printValue(value));
   return `{{ ${bindingName} }}`;
+}
+
+function isFunctionValue(node: t.Node): node is t.ArrowFunctionExpression | t.FunctionExpression {
+  return node.type === 'ArrowFunctionExpression' || node.type === 'FunctionExpression';
 }
 
 function renderScript(ctx: RenderContext): string | undefined {
@@ -246,7 +299,8 @@ function quoteAttributeValue(value: string): string | undefined {
   return undefined;
 }
 
-function formatRenderedProp(prop: RenderedProp): string {
+/** Format one structured attribute at the SFC print boundary. */
+export function formatRenderedProp(prop: RenderedProp): string {
   if (prop.value === undefined) {
     return prop.attrName;
   }
