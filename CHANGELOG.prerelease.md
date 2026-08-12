@@ -1,3 +1,19 @@
+## 10.6.0-alpha.6
+
+- Angular: Add an in-process docgen analyzer, replacing Compodoc under the flag - [#35805](https://github.com/storybookjs/storybook/pull/35805), thanks @valentinpalkovic!
+- Build: Stop nissuer from treating every repro URL as blocklisted - [#35827](https://github.com/storybookjs/storybook/pull/35827), thanks @ndelangen!
+- Core: Centralize import-statement generation in csf-tools - [#35845](https://github.com/storybookjs/storybook/pull/35845), thanks @valentinpalkovic!
+- Core: Move the component-meta invalidation state machine into core - [#35806](https://github.com/storybookjs/storybook/pull/35806), thanks @valentinpalkovic!
+- Core: Remove experimental Playwright CT integration - [#35650](https://github.com/storybookjs/storybook/pull/35650), thanks @ndelangen!
+- Core: Share the program-backed half of a component-meta project - [#35820](https://github.com/storybookjs/storybook/pull/35820), thanks @valentinpalkovic!
+- Dependencies: Bump @testing-library/user-event to 14.6.3 - [#35840](https://github.com/storybookjs/storybook/pull/35840), thanks @ndelangen!
+- Harness: Gate the Angular component meta analyzer against Compodoc - [#35808](https://github.com/storybookjs/storybook/pull/35808), thanks @valentinpalkovic!
+- Preview: Fix crash when initialising UrlStore on a docs path - [#35521](https://github.com/storybookjs/storybook/pull/35521), thanks @TheSeydiCharyyev!
+- React: Fix RDT tsconfig selection for Vite project references - [#35743](https://github.com/storybookjs/storybook/pull/35743), thanks @ndelangen!
+- TanStack: Render real link hrefs in the Link mock - [#35505](https://github.com/storybookjs/storybook/pull/35505), thanks @unpunnyfuns!
+- Tanstack React: Remove @cloudflare/vite-plugin from the inherited Vite config - [#35706](https://github.com/storybookjs/storybook/pull/35706), thanks @FrancoKaddour!
+- Webpack: Prevent long preview output filenames - [#35533](https://github.com/storybookjs/storybook/pull/35533), thanks @zhangli091011!
+
 ## 10.6.0-alpha.5
 
 - Angular-Vite: Run Compodoc on demand - [#35776](https://github.com/storybookjs/storybook/pull/35776), thanks @valentinpalkovic!
